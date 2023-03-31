@@ -1,0 +1,168 @@
+�WdefVar --name sQueuePath --type String
+defVar --name Config --type StringDictionary --innertype String
+defVar --name sUpdatedID --type String
+defVar --name BusinessExceptionMsg --type String
+defVar --name bFilteredDTEmpty --type Boolean
+defVar --name sPathToFrame --type String
+defVar --name Error --type Error
+defVar --name bSetTransactionStatusSucessRun --type Boolean
+defVar --name bSucessRun --type Boolean
+defVar --name FilteredDT --type DataTable
+defVar --name idxInitRetry --type Numeric
+defVar --name sMailCredentials --type String
+defVar --name username --type String
+defVar --name password --type SecureString
+defVar --name newMailConn --type EmailConnection
+defVar --name MailList --type List --innertype String
+defVar --name AttachmentsList --type List --innertype String
+defVar --name sSendFinalMailList --type String
+defVar --name dDateToday --type DateTime
+defVar --name bStatus_isMerged --type Boolean
+defVar --name sPathToTempDirectory --type String
+defVar --name sDirList --type List --innertype String
+defVar --name sDirList_Sorted --type List --innertype String
+defVar --name sPathToDir --type String
+defVar --name sPathsToProcessedFilesList --type List --innertype String
+defVar --name sFullFilePath_ProcessedFile --type String
+defVar --name sFullFilePath_MonthlyFile --type String
+defVar --name sPathToArchiveDirectory --type String
+defVar --name sSavePathMonthlyFile --type String
+defVar --name sZipFileName --type String
+defVar --name sYesterday --type String
+defVar --name bFileExists --type Boolean
+defVar --name sPathToCloud --type String
+defVar --name sMonthlyFileFolder --type String
+defVar --name sFullFolderPathToCloud_MonthlyFile --type String
+defVar --name sFullPathRobotFolder_MonthlyFile --type String
+defVar --name bMovedSuccesfully --type Boolean
+defVar --name sArchiveDirectoryName --type String
+setVar --name "${sPathToFrame}" --value "D:\\RPA ServiceCentrix\\IBM_RPA_Process_Invoicing_Highprotein_Astra\\" --comment "~~~~~change path to frame~~~~~"
+
+getCurrentDateAndTime --localorutc "LocalTime" dDateToday=value
+
+trimString --text "${sPathToFrame}" --trimoption "TrimStartAndEnd" sPathToFrame=value
+repeat
+	//logMessage --message "bSucessRun: ${bSucessRun}" --type "Info"
+	setVars --assignments "${BusinessExceptionMsg}="
+	if --left "${bSucessRun}" --operator "Equal_To" --right false
+		setVar --name "${bSucessRun}" --value true
+		if --left "${Config}" --operator "Is_Null_Or_Empty"
+			executeScript --handleError  --name "${sPathToFrame}IBM Code\\ProcessLayer\\Init.wal" --parameters "in_sPathToFrame=${sPathToFrame},in_bRetryInit=false" --output "out_QueuePath=${sQueuePath},Config=${Config},out_GetExcelTable=${FilteredDT},out_sYesterday=${sYesterday},out_sSavePathMonthlyFile=${sSavePathMonthlyFile}" --comment Init bSucessRun=value Error=error
+			if --left "${bSucessRun}" --operator "Is_True" --negate 
+				logMessage --message "Error in Init: ${Error}" --type "Info"
+				goSub --label RetryInitModule --comment "RetryInitModule if first start init fail"
+			endIf
+			//#//////////////////////////////////////////////////////////////////////////////////////////////////
+			//#/////////////////////////////////////////////////////////////////////////////////////////////////////
+		endIf
+	endIf
+	//# QUEUE GET TRANSACTION STARTING
+	if --left "${bSucessRun}" --operator "Equal_To" --right true
+		executeScript --handleError  --name "${sPathToFrame}IBM Code\\Framework\\QGetTransaction.wal" --parameters "in_QueuePath=${sQueuePath},in_Config=${Config},in_FilteredDT=${FilteredDT}" --output "out_UpdatedID=${sUpdatedID},out_bFilteredDTEmpty=${bFilteredDTEmpty},out_FilteredDT=${FilteredDT}" --comment QGetTransaction bSucessRun=value Error=error
+		if --left "${bSucessRun}" --operator "Equal_To" --right True
+			if --left "${bFilteredDTEmpty}" --operator "Equal_To" --right false
+				executeScript --handleError  --name "${sPathToFrame}IBM Code\\ProcessLayer\\Process.wal" --parameters "in_FilteredDT=${FilteredDT},in_sUpdatedID=${sUpdatedID},in_Config=${Config},in_QueuePath=${sQueuePath},in_sPathToFrame=${sPathToFrame}" --output "out_BusinessExceptionMsg=${BusinessExceptionMsg},out_FilteredDT=${FilteredDT},out_bStatus_isMerged=${bStatus_isMerged}" --comment Process bSucessRun=value Error=error
+				//if --left "${bSucessRun}" --operator "Is_True"
+				//logMessage --message "Process Success: ${bSucessRun}" --type "Info"
+				//endIf
+			endIf
+		else
+			setVar --name "${bFilteredDTEmpty}" --value true
+		endIf
+	else
+		setVar --name "${BusinessExceptionMsg}"
+	endIf
+	
+	if --left "${bFilteredDTEmpty}" --operator "Equal_To" --right false
+		executeScript --handleError  --name "${sPathToFrame}IBM Code\\Framework\\SetTransactionStatus.wal" --parameters "in_QueuePath=${sQueuePath},in_Config=${Config},in_sUpdatedID=${sUpdatedID},in_bSuccessRun=${bSucessRun},in_BusinessExceptionMsg=${BusinessExceptionMsg},in_sPathToFrame=${sPathToFrame},in_Error=${Error},in_FilteredDT=${FilteredDT}" --output "in_FilteredDT=${FilteredDT}" --comment SetTransactionStatus bSetTransactionStatusSucessRun=value Error=error
+		executeScript --handleError  --name "${sPathToFrame}IBM Code\\Framework\\UpdateRowFromOneTableToAnother.wal" --parameters "in_sQueuePath=${sQueuePath},in_FilteredDT=${FilteredDT},in_sUpdatedID=${sUpdatedID}" --comment UpdateRowFromOneTableToAnother
+		if --left "${bSetTransactionStatusSucessRun}" --operator "Equal_To" --right false
+			logMessage --message "Error in Set Transaction Status:\r\n${Error}" --type "Info"
+			break
+		endIf
+	else
+		logMessage --message "No Data For Updating bFilteredDTEmpty is Empty" --type "Info"
+		break
+	endIf
+until --left "${bFilteredDTEmpty}" --operator "Is_True" --negate 
+if --left "${bFilteredDTEmpty}" --operator "Is_True"
+	goSub --label ArchiveFiles
+	goSub --label FindAndDeleteProcessedFiles
+endIf
+goSub --label SendToScx
+beginSub --name RetryInitModule
+onError --executenext 
+if --left "${bSucessRun}" --operator "Is_True" --negate 
+	for --variable ${idxInitRetry} --from 0 --to 1 --step 1
+		logMessage --message "--- Retry Init: ${idxInitRetry} ---" --type "Info"
+		executeScript --handleError  --name "${sPathToFrame}IBM Code\\ProcessLayer\\Init.wal" --parameters "in_sPathToFrame=${sPathToFrame},in_bRetryInit=true" --output "out_QueuePath=${sQueuePath},Config=${Config},out_GetExcelTable=${FilteredDT}" --comment Init bSucessRun=value Error=error
+		if --left "${bSucessRun}" --operator "Is_True" --negate 
+			logMessage --message "Error in Init: ${Error}" --type "Info"
+		endIf
+		if --left "${bSucessRun}" --operator "Equal_To" --right true
+			break
+		endIf
+	next
+endIf
+endSub
+beginSub --name ArchiveFiles
+logMessage --message "--- Archive Files Starting ---" --type "Info"
+strDictGet --key PathToTemp --dictionary ${Config} --comment "Path To Temp Dir" sPathToTempDirectory=value
+strDictGet --key FullPathToCloud --dictionary ${Config} --comment "Path To Cloud" sPathToCloud=value
+
+strDictGet --key MonthlyFileFolderOnCloud --dictionary ${Config} --comment "Monthly File Folder Name On Cloud" sMonthlyFileFolder=value
+concatTexts --text "${sPathToCloud}\\" --value "${sMonthlyFileFolder}" --comment "Monthly File Folder Full Path To Cloud" sFullFolderPathToCloud_MonthlyFile=value
+
+strDictGet --key ArchiveDirectoryName --dictionary ${Config} --comment "Archive Directory Name" sArchiveDirectoryName=value
+concatTexts --text "${sPathToFrame}\\IBM RobotData\\" --value "${sArchiveDirectoryName}" --comment "Full Path to Archive Directory" sPathToArchiveDirectory=value
+
+strDictGet --key MonthlyFileFolder --dictionary ${Config} --comment "Monthly File Folder Name On Robot Folder" sMonthlyFileFolder=value
+concatTexts --text "${sPathToTempDirectory}\\" --value "${sMonthlyFileFolder}" --comment "Full Path to MonthlyFile  Directory" sFullPathRobotFolder_MonthlyFile=value
+
+if --left "${sSavePathMonthlyFile}" --operator "Is_Null_Or_Empty" --negate 
+	ifFile --file "${sSavePathMonthlyFile}" bFileExists=value
+	if --left "${bFileExists}" --operator "Is_True"
+		fileCopy --from "${sSavePathMonthlyFile}" --to "${sFullFolderPathToCloud_MonthlyFile}"
+		delay --timeout "00:00:03"
+		setVar --name "${bMovedSuccesfully}" --value True
+		fileMove --from "${sSavePathMonthlyFile}" --to "${sFullPathRobotFolder_MonthlyFile}"
+		if --left "${bMovedSuccesfully}" --operator "Is_True"
+			logMessage --message "Exported Succesfully --> ${sSavePathMonthlyFile}" --type "Info"
+		else
+			logMessage --message "Something went wrong! Failed to Export file --> ${sSavePathMonthlyFile}" --type "Info"
+		endIf
+	endIf
+endIf
+
+replaceText --texttoparse "${sYesterday}" --textpattern "/" --replacement _ sYesterday=value
+concatTexts --text "${dDateToday.Year}_${dDateToday.Month}_${dDateToday.Day}_${dDateToday.Hour}${dDateToday.Minute}${dDateToday.Second}_Temp_" --value "${sYesterday}" sZipFileName=value
+zip --directorylocation "${sPathToTempDirectory}" --destinationfolder "${sPathToArchiveDirectory}" --filename "${sZipFileName}" --scansubdirectories 
+logMessage --message "Zipped Succesfully --> ${sPathToArchiveDirectory}\\${sZipFileName}.zip" --type "Info"
+delay --timeout "00:00:01"
+logMessage --message "--- Archive Files Ending ---" --type "Info"
+endSub
+beginSub --name FindAndDeleteProcessedFiles
+logMessage --message "---Find and delete processed files Starting---" --type "Info"
+strDictGet --key PathToTemp --dictionary ${Config} sPathToTempDirectory=value
+getDirectories --path "${sPathToTempDirectory}" sDirList=value
+
+collectionCopyIf --target "${sDirList_Sorted}" --collection "${sDirList}" --operator "Matches" --value "CreatedInvoices|InvoiceRegister|MonthlyFile|PAD|Processed|Счетоводство XProt"
+foreach --collection "${sDirList_Sorted}" --variable "${sPathToDir}"
+	getFiles --path "${sPathToDir}" sPathsToProcessedFilesList=value
+	foreach --collection "${sPathsToProcessedFilesList}" --variable "${sFullFilePath_ProcessedFile}"
+		fileDelete --file "${sFullFilePath_ProcessedFile}"
+		logMessage --message "Deleted File: ${sFullFilePath_ProcessedFile}" --type "Info"
+	endFor
+endFor
+logMessage --message "---Find and delete processed files Ending---" --type "Info"
+endSub
+beginSub --name SendToScx
+strDictGet --key MailCredentials --dictionary ${Config} --comment "Get credentials for Ekont mail from Config" sMailCredentials=value
+strDictGet --key SendFinalMail --dictionary ${Config} --comment "Get credentials for Ekont mail from Config" sSendFinalMailList=value
+splitString --text "${sSendFinalMailList}" --delimiteroption "CustomDelimiter" --customdelimiter "," MailList=value
+getVaultItem --name "${sMailCredentials}" --system  username=userName password=password
+outlookConnect --mailusername "${username}" --mailpassword "${password}" newMailConn=value
+add --collection "${AttachmentsList}" --value "${sQueuePath}"
+emailSend --connection ${newMailConn} --to ${MailList} --from "${username}" --subject "Transaction Queue" --bodytype "Text" --body "Hello, this is an automatic message from ServiceCentrix RPA Robot.\r\n\r\n${BusinessExceptionMsg}\r\n" --attachments ${AttachmentsList} --comment "Connect to Outlook and send Error Mail"
+emailDisconnect --connection ${newMailConn}
+endSub*21.0.5.0
